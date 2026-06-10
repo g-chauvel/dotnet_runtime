@@ -430,6 +430,93 @@ CopyFileExWrapper(
     return ret;
 }
 
+BOOL
+MoveFileExWrapper(
+        _In_ LPCWSTR lpExistingFileName,
+        _In_ LPCWSTR lpNewFileName,
+        _In_ DWORD dwFlags
+        )
+{
+    CONTRACTL
+    {
+        NOTHROW;
+    }
+    CONTRACTL_END;
+
+    HRESULT hr  = S_OK;
+    BOOL    ret = FALSE;
+    DWORD lastError = 0;
+
+    EX_TRY
+    {
+        LongPathString Existingpath(LongPathString::Literal, lpExistingFileName);
+        LongPathString Newpath(LongPathString::Literal, lpNewFileName);
+
+        if (SUCCEEDED(LongFile::NormalizePath(Existingpath)) && SUCCEEDED(LongFile::NormalizePath(Newpath)))
+        {
+            ret = MoveFileExW(
+                    Existingpath.GetUnicode(),
+                    Newpath.GetUnicode(),
+                    dwFlags
+                    );
+        }
+
+        lastError = GetLastError();
+    }
+    EX_CATCH_HRESULT(hr);
+
+    if (hr != S_OK )
+    {
+        SetLastError(hr);
+    }
+    else if(ret == FALSE)
+    {
+        SetLastError(lastError);
+    }
+
+    return ret;
+}
+
+BOOL
+DeleteFileWrapper(
+        _In_ LPCWSTR lpFileName
+        )
+{
+    CONTRACTL
+    {
+        NOTHROW;
+    }
+    CONTRACTL_END;
+
+    HRESULT hr  = S_OK;
+    BOOL    ret = FALSE;
+    DWORD lastError = 0;
+
+    EX_TRY
+    {
+        LongPathString path(LongPathString::Literal, lpFileName);
+
+        if (SUCCEEDED(LongFile::NormalizePath(path)))
+        {
+            ret = DeleteFileW(path.GetUnicode());
+        }
+
+        lastError = GetLastError();
+    }
+    EX_CATCH_HRESULT(hr);
+
+    if (hr != S_OK )
+    {
+        SetLastError(hr);
+    }
+    else if(ret == FALSE)
+    {
+        SetLastError(lastError);
+    }
+
+    return ret;
+}
+
 //Implementation of LongFile Helpers
 const WCHAR LongFile::DirectorySeparatorChar = W('\\');
 const WCHAR LongFile::AltDirectorySeparatorChar = W('/');
