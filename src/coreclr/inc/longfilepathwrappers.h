@@ -37,6 +37,18 @@ CopyFileExWrapper(
     _Inout_opt_ LPBOOL pbCancel,
     _In_        DWORD dwCopyFlags
     );
+
+BOOL
+MoveFileExWrapper(
+    _In_ LPCWSTR lpExistingFileName,
+    _In_ LPCWSTR lpNewFileName,
+    _In_ DWORD dwFlags
+    );
+
+BOOL
+DeleteFileWrapper(
+    _In_ LPCWSTR lpFileName
+    );
 #endif //HOST_WINDOWS
 
 DWORD

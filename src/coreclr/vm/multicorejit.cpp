@@ -130,6 +130,7 @@ void _MulticoreJitTrace(const char * format, ...)
 
 #endif
 
+static LONG s_profileWriteCounter = 0;
 
 HRESULT MulticoreJitRecorder::WriteOutput()
 {
@@ -154,16 +155,68 @@ HRESULT MulticoreJitRecorder::WriteOutput()
 
     EX_TRY
     {
-        FILE* fp;
+        // The profile is written to a fixed path shared by every process using
+        // the same profile root, with no inter-process lock, so concurrent writers
+        // tear it and a starting process replays a half-written profile
+        // (https://github.com/dotnet/runtime/issues/121977). Write to a private
+        // temp file and rename it over the final path instead. The temp is created
+        // exclusively ("wbx"): pids are namespace-local, so two containers sharing
+        // one profile root can collide on the name, and the exclusive create then
+        // fails closed rather than write through the other writer's live temp.
+        // No fsync: the profile is a regenerable cache.
+        StackSString tempFileName(m_fullFileName);
+        tempFileName.AppendPrintf(".%u.%d.tmp", (unsigned)GetCurrentProcessId(), (int)InterlockedIncrement(&s_profileWriteCounter));
+#ifdef TARGET_UNIX
+        // Convert the paths for rename()/remove() up front: the conversion allocates
+        // and can throw, and a throw after the temp file is created would skip the
+        // cleanup below.
+        StackSString tempFileNameUtf8;
+        tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
+        StackSString fullFileNameUtf8;
+        fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+#endif // TARGET_UNIX
 
-        if (fopen_lp(&fp, m_fullFileName.GetUnicode(), W("wb")) == 0)
+        FILE* fp;
+        if (fopen_lp(&fp, tempFileName.GetUnicode(), W("wbx")) == 0)
         {
             hr = WriteOutput(fp);
-            fclose(fp);
+            // The stream is buffered: a failed flush at close means the temp file is
+            // incomplete, do not publish it.
+            if (fclose(fp) != 0 && SUCCEEDED(hr))
+            {
+                hr = E_FAIL;
+            }
+
+            if (SUCCEEDED(hr))
+            {
+#ifndef TARGET_UNIX
+                if (!MoveFileExWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+                {
+                    hr = E_FAIL;
+                }
+#else
+                if (rename(tempFileNameUtf8.GetUTF8(), fullFileNameUtf8.GetUTF8()) != 0)
+                {
+                    hr = E_FAIL;
+                }
+#endif // !TARGET_UNIX
+            }
+
+            if (FAILED(hr))
+            {
+#ifndef TARGET_UNIX
+                DeleteFileWrapper(tempFileName.GetUnicode());
+#else
+                remove(tempFileNameUtf8.GetUTF8());
+#endif // !TARGET_UNIX
+            }
         }
     }
     EX_CATCH
-    { }
+    {
+        // An exception between the write and the publish must not report success.
+        hr = E_FAIL;
+    }
     EX_END_CATCH
 
     return hr;
