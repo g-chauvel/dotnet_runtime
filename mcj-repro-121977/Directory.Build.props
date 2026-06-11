@@ -1,0 +1,5 @@
+<Project>
+  <!-- Intentionally empty. Stops MSBuild from inheriting the repo's Arcade build
+       infrastructure (the root Directory.Build.props pulls in Microsoft.DotNet.Arcade.Sdk):
+       this reproduction is a plain standalone app that builds with any .NET SDK. -->
+</Project>

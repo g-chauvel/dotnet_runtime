@@ -1,0 +1,4 @@
+<Project>
+  <!-- Intentionally empty. See Directory.Build.props: isolates this standalone
+       reproduction from the repo's Arcade build infrastructure. -->
+</Project>
