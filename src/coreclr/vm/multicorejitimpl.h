@@ -45,7 +45,10 @@ const int      MAX_WALKBACK      = 128;
 
 enum
 {
-    MULTICOREJIT_PROFILE_VERSION   = 102,
+    // Version 103 invalidates profiles that may have been torn by the former
+    // in-place writer. It also prevents patched and unpatched runtimes sharing
+    // a profile root from consuming each other's incompatible cache entries.
+    MULTICOREJIT_PROFILE_VERSION   = 103,
 
     MULTICOREJIT_HEADER_RECORD_ID           = 1,
     MULTICOREJIT_MODULE_RECORD_ID           = 2,
