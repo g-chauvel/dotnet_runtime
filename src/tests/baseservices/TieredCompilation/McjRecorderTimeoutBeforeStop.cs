@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -42,12 +43,43 @@ public static class BasicTest
         Assert.True(File.Exists(profilePath), $"MCJ profile was not published at {profilePath}");
         Assert.True(new FileInfo(profilePath).Length > 0, "MCJ profile is empty");
 
+        byte[] firstProfile = File.ReadAllBytes(profilePath);
+
+        // Start a second recording with a different method so the new profile differs.
+        ProfileOptimization.StartProfile("profile.mcj");
+        Bar();
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Permit replacement of the directory entry, but deny an in-place writer.
+            // The old fopen("wb") implementation cannot publish while this handle is
+            // open; the atomic temp-file + rename implementation can.
+            using FileStream heldProfile = new(
+                profilePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete);
+            ProfileOptimization.StartProfile(null);
+        }
+        else
+        {
+            ProfileOptimization.StartProfile(null);
+        }
+
+        byte[] secondProfile = File.ReadAllBytes(profilePath);
+        Assert.False(firstProfile.SequenceEqual(secondProfile), "MCJ profile was not atomically replaced");
+
         // The atomic publish must not leave temp files behind.
         Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "profile.mcj.*.tmp"));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Foo()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Bar()
     {
     }
 }
