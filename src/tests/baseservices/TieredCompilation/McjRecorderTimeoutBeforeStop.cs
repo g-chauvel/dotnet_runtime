@@ -63,6 +63,11 @@ public static class BasicTest
         }
         else
         {
+            // Unix does not enforce FileShare, so make the final path a symlink to a
+            // directory. An in-place fopen("wb") follows the symlink and fails, while
+            // publishing a private temp file with rename replaces the symlink itself.
+            File.Delete(profilePath);
+            Directory.CreateSymbolicLink(profilePath, Environment.CurrentDirectory);
             ProfileOptimization.StartProfile(null);
         }
 
