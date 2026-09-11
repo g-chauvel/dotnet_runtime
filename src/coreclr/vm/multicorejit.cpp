@@ -19,6 +19,7 @@
 #include "eventtrace.h"
 #include "array.h"
 #include "hash.h"
+#include "minipal/random.h"
 #include "minipal/time.h"
 
 #include "appdomain.hpp"
@@ -130,8 +131,6 @@ void _MulticoreJitTrace(const char * format, ...)
 
 #endif
 
-static LONG s_profileWriteCounter = 0;
-
 HRESULT MulticoreJitRecorder::WriteOutput()
 {
     CONTRACTL
@@ -153,6 +152,12 @@ HRESULT MulticoreJitRecorder::WriteOutput()
     // Go into preemptive mode for file operations
     GCX_PREEMP();
 
+    uint64_t tempFileNonce;
+    if (minipal_get_cryptographically_secure_random_bytes((uint8_t*)&tempFileNonce, sizeof(tempFileNonce)) != 0)
+    {
+        return E_FAIL;
+    }
+
     EX_TRY
     {
         // The profile is written to a fixed path shared by every process using
@@ -160,12 +165,15 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         // tear it and a starting process replays a half-written profile
         // (https://github.com/dotnet/runtime/issues/121977). Write to a private
         // temp file and rename it over the final path instead. The temp is created
-        // exclusively ("wbx"): pids are namespace-local, so two containers sharing
-        // one profile root can collide on the name, and the exclusive create then
-        // fails closed rather than write through the other writer's live temp.
+        // exclusively ("wbx"). A random suffix avoids deterministic collisions when
+        // pids are reused, when a crashed process leaves a temp file behind, or when
+        // containers with separate pid namespaces share the same profile root.
         // No fsync: the profile is a regenerable cache.
         StackSString tempFileName(m_fullFileName);
-        tempFileName.AppendPrintf(".%u.%d.tmp", (unsigned)GetCurrentProcessId(), (int)InterlockedIncrement(&s_profileWriteCounter));
+        tempFileName.AppendPrintf(
+            ".%u.%016llx.tmp",
+            (unsigned)GetCurrentProcessId(),
+            (unsigned long long)tempFileNonce);
 #ifdef TARGET_UNIX
         // Convert the paths for rename()/remove() up front: the conversion allocates
         // and can throw, and a throw after the temp file is created would skip the
