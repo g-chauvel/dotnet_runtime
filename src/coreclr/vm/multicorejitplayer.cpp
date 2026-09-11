@@ -1042,6 +1042,16 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
             return COR_E_FILENOTFOUND;
         }
 
+#ifdef TARGET_WINDOWS
+        // Test-only delay used to verify that this native reader permits an atomic
+        // replacement while its stream remains open.
+        DWORD profileReadDelay = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_MultiCoreJitProfileReadDelay);
+        if (profileReadDelay != 0)
+        {
+            ClrSleepEx(profileReadDelay, FALSE);
+        }
+#endif // TARGET_WINDOWS
+
         HeaderRecord header;
 
         size_t cbRead = fread(&header, 1, sizeof(header), fp);

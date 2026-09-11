@@ -13,6 +13,9 @@
     <Compile Include="McjRecorderTimeoutBeforeStop.cs" />
 
     <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileWriteDelay" Value="1" />
+    <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileReadDelay"
+                                Value="2000"
+                                Condition="'$(TestWrapperTargetsWindows)' == 'true'" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(TestLibraryProjectPath)" />

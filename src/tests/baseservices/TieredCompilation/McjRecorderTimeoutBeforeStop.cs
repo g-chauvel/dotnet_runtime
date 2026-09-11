@@ -46,7 +46,41 @@ public static class BasicTest
         byte[] firstProfile = File.ReadAllBytes(profilePath);
 
         // Start a second recording with a different method so the new profile differs.
-        ProfileOptimization.StartProfile("profile.mcj");
+        if (OperatingSystem.IsWindows())
+        {
+            // MultiCoreJitProfileReadDelay keeps the native player stream open inside
+            // StartProfile. Replacing the directory entry from another thread succeeds
+            // only when that native stream was opened with FILE_SHARE_DELETE.
+            string replacementPath = profilePath + ".replacement";
+            File.Copy(profilePath, replacementPath);
+
+            Exception replacementError = null;
+            Thread replacer = new(() =>
+            {
+                Thread.Sleep(250);
+                try
+                {
+                    File.Move(replacementPath, profilePath, overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    replacementError = ex;
+                }
+            });
+
+            replacer.Start();
+            ProfileOptimization.StartProfile("profile.mcj");
+            bool replacementFinishedWhileReaderWasOpen = replacer.Join(0);
+            replacer.Join();
+
+            Assert.True(replacementFinishedWhileReaderWasOpen, "Profile replacement did not run while the native reader was open");
+            Assert.Null(replacementError);
+        }
+        else
+        {
+            ProfileOptimization.StartProfile("profile.mcj");
+        }
+
         Bar();
 
         if (OperatingSystem.IsWindows())
