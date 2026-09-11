@@ -27,6 +27,8 @@ CreateFileWrapper(
 
 int u16_fopen_wrapper(FILE** stream, const WCHAR* filename, const WCHAR* mode);
 
+int u16_fopen_read_shared_delete_wrapper(FILE** stream, const WCHAR* filename);
+
 BOOL
 CopyFileExWrapper(
     _In_        LPCWSTR lpExistingFileName,

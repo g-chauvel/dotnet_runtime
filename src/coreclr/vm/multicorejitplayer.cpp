@@ -1030,7 +1030,14 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
 
     {
         FILE* fp;
-        if (fopen_lp(&fp, pFileName, W("rb")) != 0)
+#ifdef TARGET_WINDOWS
+        // Let a recorder atomically replace the final path while this stream
+        // continues reading the previous file contents.
+        int openError = u16_fopen_read_shared_delete_wrapper(&fp, pFileName);
+#else
+        int openError = fopen_lp(&fp, pFileName, W("rb"));
+#endif // TARGET_WINDOWS
+        if (openError != 0)
         {
             return COR_E_FILENOTFOUND;
         }

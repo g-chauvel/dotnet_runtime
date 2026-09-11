@@ -9,6 +9,11 @@
 #include <dn-stdio.h>
 
 #ifdef HOST_WINDOWS
+#include <fcntl.h>
+#include <io.h>
+#endif // HOST_WINDOWS
+
+#ifdef HOST_WINDOWS
 class LongFile
 {
 private:
@@ -373,6 +378,53 @@ int u16_fopen_wrapper(FILE** stream, const WCHAR* filename, const WCHAR* mode)
     EX_END_CATCH
 
     return -1;
+}
+
+int u16_fopen_read_shared_delete_wrapper(FILE** stream, const WCHAR* filename)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    *stream = nullptr;
+
+    // The MulticoreJIT writer publishes a completed profile by renaming it over
+    // the final path. Allow that delete access while readers keep the old file
+    // alive, but continue to deny in-place writers.
+    HANDLE fileHandle = CreateFileWrapper(
+        filename,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (fileHandle == INVALID_HANDLE_VALUE)
+    {
+        return -1;
+    }
+
+    // _open_osfhandle transfers ownership of the Win32 handle to the CRT file
+    // descriptor, and _fdopen transfers the descriptor to the FILE stream.
+    int fd = _open_osfhandle(reinterpret_cast<intptr_t>(fileHandle), _O_RDONLY | _O_BINARY);
+    if (fd == -1)
+    {
+        CloseHandle(fileHandle);
+        return -1;
+    }
+
+    FILE* file = _fdopen(fd, "rb");
+    if (file == nullptr)
+    {
+        _close(fd);
+        return -1;
+    }
+
+    *stream = file;
+    return 0;
 }
 
 BOOL
