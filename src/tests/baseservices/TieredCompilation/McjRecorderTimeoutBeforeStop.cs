@@ -40,9 +40,10 @@ public static class BasicTest
         Assert.True(new FileInfo(profilePath).Length > 0, "MCJ profile is empty");
 
         byte[] firstProfile = File.ReadAllBytes(profilePath);
+        bool supportsPosixRename = OperatingSystem.IsWindows() && ProbePosixRename();
 
         // Start a second recording with a different method so the new profile differs.
-        if (OperatingSystem.IsWindows())
+        if (supportsPosixRename)
         {
             // MultiCoreJitProfileReadDelay keeps the native player stream open inside
             // StartProfile. Replacing the directory entry from another thread succeeds
@@ -57,7 +58,7 @@ public static class BasicTest
                 Thread.Sleep(250);
                 try
                 {
-                    ReplaceProfileWithPosixSemantics(replacementPath, profilePath);
+                    Assert.True(TryReplaceProfileWithPosixSemantics(replacementPath, profilePath));
                 }
                 catch (Exception ex)
                 {
@@ -80,7 +81,7 @@ public static class BasicTest
 
         Bar();
 
-        if (OperatingSystem.IsWindows())
+        if (supportsPosixRename)
         {
             // Permit replacement of the directory entry, but deny an in-place writer.
             // The old fopen("wb") implementation cannot publish while this handle is
@@ -98,6 +99,11 @@ public static class BasicTest
             heldProfile.ReadExactly(heldBytes);
             Assert.True(firstProfile.SequenceEqual(heldBytes), "Published profile changed the old reader's bytes");
             Assert.True(heldProfile.Length == firstProfile.Length, "Published profile changed the old reader's length");
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            // Legacy same-volume rename still publishes once readers have closed.
+            ProfileOptimization.StartProfile(null);
         }
         else
         {
@@ -152,9 +158,34 @@ public static class BasicTest
     {
     }
 
+    private static bool ProbePosixRename()
+    {
+        string source = Path.Combine(Environment.CurrentDirectory, "mcj-posix-source");
+        string destination = Path.Combine(Environment.CurrentDirectory, "mcj-posix-destination");
+        try
+        {
+            File.WriteAllBytes(source, new byte[] { 2 });
+            File.WriteAllBytes(destination, new byte[] { 1 });
+            using FileStream reader = new(destination, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            if (!TryReplaceProfileWithPosixSemantics(source, destination))
+            {
+                Console.WriteLine("POSIX rename unavailable; verifying publication with readers closed.");
+                return false;
+            }
+            Assert.Equal(1, reader.ReadByte());
+            Assert.Equal(new byte[] { 2 }, File.ReadAllBytes(destination));
+            return true;
+        }
+        finally
+        {
+            File.Delete(source);
+            File.Delete(destination);
+        }
+    }
+
     // File.Move uses MoveFileExW, whose replacement mode rejects an open destination.
     // Exercise the reader's share mode using the same POSIX contract as MCJ publication.
-    private static unsafe void ReplaceProfileWithPosixSemantics(string source, string destination)
+    private static unsafe bool TryReplaceProfileWithPosixSemantics(string source, string destination)
     {
         const uint DeleteAccess = 0x00010000;
         const uint ShareReadWriteDelete = 7;
@@ -176,8 +207,20 @@ public static class BasicTest
         info->FileNameLength = (uint)fileNameBytes;
         destination.AsSpan().CopyTo(new Span<char>(&info->FileName, destination.Length));
         (&info->FileName)[destination.Length] = '\0';
-        Assert.True(SetFileInformationByHandle(handle, FileRenameInfoEx, buffer, (uint)bufferBytes),
-            $"POSIX profile replacement failed: {Marshal.GetLastWin32Error()}");
+        if (SetFileInformationByHandle(handle, FileRenameInfoEx, buffer, (uint)bufferBytes))
+        {
+            return true;
+        }
+
+        int error = Marshal.GetLastWin32Error();
+        // Match the runtime fallback, without treating access/sharing failures as
+        // missing OS/filesystem support or silently skipping their assertions.
+        if (error == 87 || error == 50 || error == 1 || error == 120)
+        {
+            return false;
+        }
+        Assert.True(false, $"POSIX profile replacement failed: {error}");
+        return false;
     }
 
     [StructLayout(LayoutKind.Sequential)]

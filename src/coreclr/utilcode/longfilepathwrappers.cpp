@@ -541,16 +541,36 @@ ReplaceFileWithPosixSemanticsWrapper(
                 renameInfo->FileNameLength = fileNameBytes.Value();
                 memcpy(renameInfo->FileName, Newpath.GetUnicode(), fileNameBytes.Value() + sizeof(WCHAR));
 
-                HandleHolder source(CreateFileW(Existingpath.GetUnicode(), DELETE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL));
-                if (source != INVALID_HANDLE_VALUE)
+                bool renameInfoExUnsupported = false;
                 {
-                    ret = SetFileInformationByHandle(source, renameInfoEx,
-                        renameInfo, bufferBytes.Value());
+                    HandleHolder source(CreateFileW(Existingpath.GetUnicode(), DELETE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL));
+                    if (source != INVALID_HANDLE_VALUE)
+                    {
+                        ret = SetFileInformationByHandle(source, renameInfoEx,
+                            renameInfo, bufferBytes.Value());
+                        lastError = GetLastError();
+                        renameInfoExUnsupported = !ret &&
+                            (lastError == ERROR_INVALID_PARAMETER || lastError == ERROR_NOT_SUPPORTED ||
+                             lastError == ERROR_INVALID_FUNCTION || lastError == ERROR_CALL_NOT_IMPLEMENTED);
+                    }
+                    else
+                    {
+                        lastError = GetLastError();
+                    }
                 }
-                // Capture before the holder closes the source handle.
-                lastError = GetLastError();
+
+                if (renameInfoExUnsupported)
+                {
+                    // Older supported Windows versions and some filesystems do not
+                    // implement POSIX rename. Close the source handle before trying
+                    // the legacy same-volume rename (never enable COPY_ALLOWED).
+                    // This may refuse publication while a reader is open, but must
+                    // never fall back to truncating or writing the final file in place.
+                    ret = MoveFileExW(Existingpath.GetUnicode(), Newpath.GetUnicode(), MOVEFILE_REPLACE_EXISTING);
+                    lastError = GetLastError();
+                }
             }
         }
         else
