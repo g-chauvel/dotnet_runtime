@@ -593,7 +593,7 @@ ReplaceFileWithPosixSemanticsWrapper(
 }
 
 BOOL
-CopyFileDaclWrapper(
+CopyFileSecurityWrapper(
         _In_ LPCWSTR lpExistingFileName,
         _In_ LPCWSTR lpNewFileName
         )
@@ -620,7 +620,13 @@ CopyFileDaclWrapper(
         else
         {
             DWORD securityDescriptorSize = 0;
-            if (GetFileSecurityW(existingPath.GetUnicode(), DACL_SECURITY_INFORMATION, nullptr, 0, &securityDescriptorSize))
+            // A rename publishes the temporary file's owner and group as well as
+            // its DACL. Preserve all metadata that a non-privileged writer can
+            // normally read and apply. In particular, do not turn a profile owned
+            // by another principal into a profile owned by the writer.
+            const SECURITY_INFORMATION securityInformation =
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+            if (GetFileSecurityW(existingPath.GetUnicode(), securityInformation, nullptr, 0, &securityDescriptorSize))
             {
                 lastError = ERROR_INVALID_DATA;
             }
@@ -635,10 +641,13 @@ CopyFileDaclWrapper(
                 else if (lastError == ERROR_INSUFFICIENT_BUFFER && securityDescriptorSize != 0)
                 {
                     NewArrayHolder<BYTE> securityDescriptor = new BYTE[securityDescriptorSize];
-                    if (GetFileSecurityW(existingPath.GetUnicode(), DACL_SECURITY_INFORMATION,
+                    if (GetFileSecurityW(existingPath.GetUnicode(), securityInformation,
                         reinterpret_cast<PSECURITY_DESCRIPTOR>(securityDescriptor.GetValue()), securityDescriptorSize, &securityDescriptorSize))
                     {
-                        ret = SetFileSecurityW(newPath.GetUnicode(), DACL_SECURITY_INFORMATION,
+                        // If assigning the existing owner or group needs a privilege
+                        // the writer does not have, fail publication. The caller will
+                        // delete the temporary file and retain the old profile.
+                        ret = SetFileSecurityW(newPath.GetUnicode(), securityInformation,
                             reinterpret_cast<PSECURITY_DESCRIPTOR>(securityDescriptor.GetValue()));
                         lastError = GetLastError();
                     }

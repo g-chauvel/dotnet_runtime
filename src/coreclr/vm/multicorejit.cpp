@@ -262,10 +262,11 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         {
 #ifndef TARGET_UNIX
             // A rename publishes the temporary file metadata too. Preserve an
-            // existing profile's DACL before writing any profile contents, so a
-            // profile deliberately restricted below a more-permissive root does
-            // not become visible to the root's inherited principals.
-            if (!CopyFileDaclWrapper(m_fullFileName.GetUnicode(), tempFileName.GetUnicode()))
+            // existing profile's owner, group, and DACL before writing any profile
+            // contents. Otherwise a profile deliberately restricted below a more-
+            // permissive root could become visible to inherited principals, or
+            // become owned by the writer instead of its original owner.
+            if (!CopyFileSecurityWrapper(m_fullFileName.GetUnicode(), tempFileName.GetUnicode()))
             {
                 hr = E_FAIL;
             }

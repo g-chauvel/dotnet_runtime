@@ -7,6 +7,8 @@ using System.Linq;
 using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 using System.Threading;
 using Xunit;
@@ -138,7 +140,78 @@ public static class BasicTest
         // The atomic publish must not leave temp files behind.
         Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "mcj.*.tmp"));
 
+        if (OperatingSystem.IsWindows())
+        {
+            VerifyWindowsOwnerPreservation(profilePath);
+        }
+
         VerifyLongProfileNames();
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void VerifyWindowsOwnerPreservation(string profilePath)
+    {
+        const uint SeFileObject = 1;
+        const uint OwnerSecurityInformation = 0x00000001;
+        const string BuiltinAdministratorsSid = "S-1-5-32-544";
+
+        // Setting a file owner to a group requires that group to be owner-eligible
+        // in the test token. This is normally true for an elevated Windows test
+        // worker. Do not turn a platform capability precondition into a product
+        // failure on restricted workers.
+        if (!TrySetFileOwner(profilePath, BuiltinAdministratorsSid, out uint setOwnerError))
+        {
+            Console.WriteLine($"Skipping owner-preservation assertion: setting the test owner failed with {setOwnerError}.");
+            return;
+        }
+
+        string expectedOwner = GetFileOwner(profilePath, SeFileObject, OwnerSecurityInformation);
+        Assert.True(string.Equals(BuiltinAdministratorsSid, expectedOwner, StringComparison.OrdinalIgnoreCase),
+            $"Failed to set the test profile owner to {BuiltinAdministratorsSid}; got {expectedOwner}");
+        byte[] before = File.ReadAllBytes(profilePath);
+
+        ProfileOptimization.StartProfile("profile.mcj");
+        RecordOwnerProfile<OwnerProfile>();
+        ProfileOptimization.StartProfile(null);
+
+        Assert.False(before.SequenceEqual(File.ReadAllBytes(profilePath)), "Profile was not republished after changing its owner");
+        Assert.True(string.Equals(expectedOwner, GetFileOwner(profilePath, SeFileObject, OwnerSecurityInformation), StringComparison.OrdinalIgnoreCase),
+            "Published profile owner changed during atomic replacement");
+        Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "mcj.*.tmp"));
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool TrySetFileOwner(string path, string ownerSid, out uint error)
+    {
+        SecurityIdentifier owner = new(ownerSid);
+        byte[] ownerBytes = new byte[owner.BinaryLength];
+        owner.GetBinaryForm(ownerBytes, 0);
+        error = SetNamedSecurityInfoW(path, 1, 0x00000001, ownerBytes, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        return error == 0;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string GetFileOwner(string path, uint objectType, uint securityInformation)
+    {
+        uint error = GetNamedSecurityInfoW(path, objectType, securityInformation, out IntPtr owner,
+            out _, out _, out _, out IntPtr securityDescriptor);
+        Assert.Equal(0u, error);
+        try
+        {
+            Assert.True(ConvertSidToStringSidW(owner, out IntPtr ownerString));
+            try
+            {
+                return Marshal.PtrToStringUni(ownerString)!;
+            }
+            finally
+            {
+                LocalFree(ownerString);
+            }
+        }
+        finally
+        {
+            LocalFree(securityDescriptor);
+        }
     }
 
     private static void VerifyLongProfileNames()
@@ -257,6 +330,20 @@ public static class BasicTest
     private static extern unsafe bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
         void* information, uint bufferSize);
 
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint SetNamedSecurityInfoW(string objectName, uint objectType, uint securityInformation,
+        byte[] owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint GetNamedSecurityInfoW(string objectName, uint objectType, uint securityInformation,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr stringSid);
+
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Foo()
     {
@@ -266,4 +353,11 @@ public static class BasicTest
     private static void Bar()
     {
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordOwnerProfile<T>() where T : struct
+    {
+    }
+
+    private struct OwnerProfile { }
 }

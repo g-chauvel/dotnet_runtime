@@ -47,7 +47,7 @@ ReplaceFileWithPosixSemanticsWrapper(
     );
 
 BOOL
-CopyFileDaclWrapper(
+CopyFileSecurityWrapper(
     _In_ LPCWSTR lpExistingFileName,
     _In_ LPCWSTR lpNewFileName
     );
