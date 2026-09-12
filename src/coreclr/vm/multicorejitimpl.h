@@ -45,9 +45,10 @@ const int      MAX_WALKBACK      = 128;
 
 enum
 {
-    // Version 103 invalidates profiles that may have been torn by the former
-    // in-place writer. It also prevents patched and unpatched runtimes sharing
-    // a profile root from consuming each other's incompatible cache entries.
+    // Version 103 invalidates stable profiles produced by the former in-place
+    // writer. It does not isolate a Unix reader from an old writer modifying its
+    // already-open inode after header validation. All writers sharing a path must
+    // use atomic publication, or different runtime cohorts must use different paths.
     MULTICOREJIT_PROFILE_VERSION   = 103,
 
     MULTICOREJIT_HEADER_RECORD_ID           = 1,
