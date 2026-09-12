@@ -169,9 +169,22 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         // pids are reused, when a crashed process leaves a temp file behind, or when
         // containers with separate pid namespaces share the same profile root.
         // No fsync: the profile is a regenerable cache.
-        StackSString tempFileName(m_fullFileName);
+        // Keep the temporary basename short: appending a suffix to the final name
+        // would reject otherwise valid names near the filesystem's component limit.
+        const WCHAR* fullPath = m_fullFileName.GetUnicode();
+        COUNT_T directoryLength = m_fullFileName.GetCount();
+        while (directoryLength > 0 && fullPath[directoryLength - 1] != DIRECTORY_SEPARATOR_CHAR_W
+#ifndef TARGET_UNIX
+            && fullPath[directoryLength - 1] != W('/')
+#endif
+            )
+        {
+            directoryLength--;
+        }
+        StackSString tempFileName;
+        tempFileName.Set(fullPath, directoryLength);
         tempFileName.AppendPrintf(
-            ".%u.%016llx.tmp",
+            "mcj.%u.%016llx.tmp",
             (unsigned)GetCurrentProcessId(),
             (unsigned long long)tempFileNonce);
 #ifdef TARGET_UNIX

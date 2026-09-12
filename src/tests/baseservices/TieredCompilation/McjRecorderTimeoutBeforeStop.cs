@@ -119,7 +119,43 @@ public static class BasicTest
         Assert.False(firstProfile.SequenceEqual(secondProfile), "MCJ profile was not atomically replaced");
 
         // The atomic publish must not leave temp files behind.
-        Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "profile.mcj.*.tmp"));
+        Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "mcj.*.tmp"));
+
+        VerifyLongProfileNames();
+    }
+
+    private static void VerifyLongProfileNames()
+    {
+        // Exercise a nested destination as well as names close to NAME_MAX. The
+        // temporary must stay in that directory without extending the final basename.
+        string directory = Path.Combine(Environment.CurrentDirectory, "mcj-long-names");
+        Directory.CreateDirectory(directory);
+        int[] lengths = { 230, 240, 250, 255 };
+        for (int i = 0; i < lengths.Length; i++)
+        {
+            string name = Path.Combine("mcj-long-names", new string('p', lengths[i]));
+            string path = Path.Combine(Environment.CurrentDirectory, name);
+            File.Delete(path);
+            ProfileOptimization.StartProfile(name);
+            // Each recording needs a newly jitted method to produce a profile.
+            switch (i)
+            {
+                case 0: RecordLongProfile<byte>(); break;
+                case 1: RecordLongProfile<short>(); break;
+                case 2: RecordLongProfile<int>(); break;
+                case 3: RecordLongProfile<long>(); break;
+            }
+            ProfileOptimization.StartProfile(null);
+            Assert.True(File.Exists(path), $"MCJ profile with basename length {lengths[i]} was not published");
+            Assert.True(new FileInfo(path).Length >= 64, "Long-name profile has no complete header");
+            Assert.Empty(Directory.GetFiles(directory, "mcj.*.tmp"));
+            File.Delete(path);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordLongProfile<T>() where T : struct
+    {
     }
 
     // File.Move uses MoveFileExW, whose replacement mode rejects an open destination.
