@@ -41,10 +41,9 @@ CopyFileExWrapper(
     );
 
 BOOL
-MoveFileExWrapper(
+ReplaceFileWithPosixSemanticsWrapper(
     _In_ LPCWSTR lpExistingFileName,
-    _In_ LPCWSTR lpNewFileName,
-    _In_ DWORD dwFlags
+    _In_ LPCWSTR lpNewFileName
     );
 
 BOOL

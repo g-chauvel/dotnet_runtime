@@ -198,7 +198,7 @@ HRESULT MulticoreJitRecorder::WriteOutput()
             if (SUCCEEDED(hr))
             {
 #ifndef TARGET_UNIX
-                if (!MoveFileExWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+                if (!ReplaceFileWithPosixSemanticsWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode()))
                 {
                     hr = E_FAIL;
                 }

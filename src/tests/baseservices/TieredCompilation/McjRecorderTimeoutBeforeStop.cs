@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Threading;
 using Xunit;
 using TestLibrary;
@@ -50,8 +52,9 @@ public static class BasicTest
         {
             // MultiCoreJitProfileReadDelay keeps the native player stream open inside
             // StartProfile. Replacing the directory entry from another thread succeeds
-            // only when that native stream was opened with FILE_SHARE_DELETE.
+            // only with POSIX rename semantics and FILE_SHARE_DELETE on the native stream.
             string replacementPath = profilePath + ".replacement";
+            File.Delete(replacementPath);
             File.Copy(profilePath, replacementPath);
 
             Exception replacementError = null;
@@ -60,7 +63,7 @@ public static class BasicTest
                 Thread.Sleep(250);
                 try
                 {
-                    File.Move(replacementPath, profilePath, overwrite: true);
+                    ReplaceProfileWithPosixSemantics(replacementPath, profilePath);
                 }
                 catch (Exception ex)
                 {
@@ -94,6 +97,13 @@ public static class BasicTest
                 FileAccess.Read,
                 FileShare.Read | FileShare.Delete);
             ProfileOptimization.StartProfile(null);
+
+            // The old handle must still expose the old immutable profile after the
+            // directory entry has been replaced with the new recording.
+            byte[] heldBytes = new byte[firstProfile.Length];
+            heldProfile.ReadExactly(heldBytes);
+            Assert.True(firstProfile.SequenceEqual(heldBytes), "Published profile changed the old reader's bytes");
+            Assert.True(heldProfile.Length == firstProfile.Length, "Published profile changed the old reader's length");
         }
         else
         {
@@ -111,6 +121,51 @@ public static class BasicTest
         // The atomic publish must not leave temp files behind.
         Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "profile.mcj.*.tmp"));
     }
+
+    // File.Move uses MoveFileExW, whose replacement mode rejects an open destination.
+    // Exercise the reader's share mode using the same POSIX contract as MCJ publication.
+    private static unsafe void ReplaceProfileWithPosixSemantics(string source, string destination)
+    {
+        const uint DeleteAccess = 0x00010000;
+        const uint ShareReadWriteDelete = 7;
+        const uint OpenExisting = 3;
+        const uint NormalAttributes = 0x80;
+        const int FileRenameInfoEx = 22;
+        const uint ReplaceExistingWithPosixSemantics = 3;
+
+        using SafeFileHandle handle = CreateFileW(source, DeleteAccess, ShareReadWriteDelete,
+            IntPtr.Zero, OpenExisting, NormalAttributes, IntPtr.Zero);
+        Assert.False(handle.IsInvalid, $"Opening rename source failed: {Marshal.GetLastWin32Error()}");
+
+        int fileNameBytes = checked(destination.Length * sizeof(char));
+        int bufferBytes = checked(sizeof(FileRenameInfo) + fileNameBytes);
+        byte* buffer = stackalloc byte[bufferBytes];
+        FileRenameInfo* info = (FileRenameInfo*)buffer;
+        info->Flags = ReplaceExistingWithPosixSemantics;
+        info->RootDirectory = IntPtr.Zero;
+        info->FileNameLength = (uint)fileNameBytes;
+        destination.AsSpan().CopyTo(new Span<char>(&info->FileName, destination.Length));
+        (&info->FileName)[destination.Length] = '\0';
+        Assert.True(SetFileInformationByHandle(handle, FileRenameInfoEx, buffer, (uint)bufferBytes),
+            $"POSIX profile replacement failed: {Marshal.GetLastWin32Error()}");
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileRenameInfo
+    {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode,
+        IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern unsafe bool SetFileInformationByHandle(SafeFileHandle handle, int informationClass,
+        void* information, uint bufferSize);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Foo()

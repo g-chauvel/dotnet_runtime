@@ -483,10 +483,9 @@ CopyFileExWrapper(
 }
 
 BOOL
-MoveFileExWrapper(
+ReplaceFileWithPosixSemanticsWrapper(
         _In_ LPCWSTR lpExistingFileName,
-        _In_ LPCWSTR lpNewFileName,
-        _In_ DWORD dwFlags
+        _In_ LPCWSTR lpNewFileName
         )
 {
     CONTRACTL
@@ -495,8 +494,8 @@ MoveFileExWrapper(
     }
     CONTRACTL_END;
 
-    HRESULT hr  = S_OK;
-    BOOL    ret = FALSE;
+    HRESULT hr = S_OK;
+    BOOL ret = FALSE;
     DWORD lastError = 0;
 
     EX_TRY
@@ -506,22 +505,66 @@ MoveFileExWrapper(
 
         if (SUCCEEDED(LongFile::NormalizePath(Existingpath)) && SUCCEEDED(LongFile::NormalizePath(Newpath)))
         {
-            ret = MoveFileExW(
-                    Existingpath.GetUnicode(),
-                    Newpath.GetUnicode(),
-                    dwFlags
-                    );
-        }
+            // MoveFileExW cannot replace an open destination even when its readers
+            // allow FILE_SHARE_DELETE. POSIX rename preserves those readers' handles
+            // while making the new file visible to subsequent opens.
+            // CoreCLR compiles with a Windows 8 API baseline. Newer SDKs hide
+            // FILE_RENAME_INFO.Flags and FileRenameInfoEx behind newer target macros,
+            // so describe their ABI locally without raising the global baseline.
+            struct PosixFileRenameInfo
+            {
+                DWORD Flags;
+                HANDLE RootDirectory;
+                DWORD FileNameLength;
+                WCHAR FileName[1];
+            };
+            static_assert(sizeof(PosixFileRenameInfo) == sizeof(FILE_RENAME_INFO));
+            static_assert(offsetof(PosixFileRenameInfo, FileName) == offsetof(FILE_RENAME_INFO, FileName));
+            const DWORD replaceIfExists = 0x1; // FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+            const DWORD posixSemantics = 0x2;  // FILE_RENAME_FLAG_POSIX_SEMANTICS
+            const FILE_INFO_BY_HANDLE_CLASS renameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
 
-        lastError = GetLastError();
+            S_UINT32 fileNameBytes = S_UINT32(Newpath.GetCount()) * S_UINT32(sizeof(WCHAR));
+            S_UINT32 bufferBytes = fileNameBytes + S_UINT32(sizeof(PosixFileRenameInfo));
+            if (bufferBytes.IsOverflow())
+            {
+                lastError = ERROR_FILENAME_EXCED_RANGE;
+            }
+            else
+            {
+                // Allocate before opening the source. The holder closes the handle
+                // on all paths after the allocation has succeeded.
+                NewArrayHolder<BYTE> buffer = new BYTE[bufferBytes.Value()];
+                PosixFileRenameInfo* renameInfo = reinterpret_cast<PosixFileRenameInfo*>(buffer.GetValue());
+                renameInfo->Flags = replaceIfExists | posixSemantics;
+                renameInfo->RootDirectory = NULL;
+                renameInfo->FileNameLength = fileNameBytes.Value();
+                memcpy(renameInfo->FileName, Newpath.GetUnicode(), fileNameBytes.Value() + sizeof(WCHAR));
+
+                HandleHolder source(CreateFileW(Existingpath.GetUnicode(), DELETE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL));
+                if (source != INVALID_HANDLE_VALUE)
+                {
+                    ret = SetFileInformationByHandle(source, renameInfoEx,
+                        renameInfo, bufferBytes.Value());
+                }
+                // Capture before the holder closes the source handle.
+                lastError = GetLastError();
+            }
+        }
+        else
+        {
+            lastError = ERROR_INVALID_NAME;
+        }
     }
     EX_CATCH_HRESULT(hr);
 
-    if (hr != S_OK )
+    if (hr != S_OK)
     {
         SetLastError(hr);
     }
-    else if(ret == FALSE)
+    else if (!ret)
     {
         SetLastError(lastError);
     }
