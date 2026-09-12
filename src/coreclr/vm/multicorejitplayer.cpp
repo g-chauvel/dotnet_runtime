@@ -1029,6 +1029,39 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
     HRESULT hr = S_OK;
 
     {
+#ifdef TARGET_WINDOWS
+        // Test-only handshake. Prepare all strings and event handles before
+        // opening the FILE so an allocation failure cannot leak the stream.
+        CLRConfigStringHolder readEvents(CLRConfig::GetConfigValue(CLRConfig::INTERNAL_MultiCoreJitProfileReadEvents));
+        HandleHolder readReady(NULL);
+        HandleHolder readContinue(NULL);
+        HandleHolder readCompleted(NULL);
+        if (readEvents != NULL)
+        {
+            StackSString readyName(readEvents);
+            readyName.Append(W(".ready"));
+            StackSString continueName(readEvents);
+            continueName.Append(W(".continue"));
+            StackSString completedName(readEvents);
+            completedName.Append(W(".completed"));
+            readReady = OpenEventW(EVENT_MODIFY_STATE, FALSE, readyName.GetUnicode());
+            if (readReady == NULL)
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+            readContinue = OpenEventW(SYNCHRONIZE, FALSE, continueName.GetUnicode());
+            if (readContinue == NULL)
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+            readCompleted = OpenEventW(EVENT_MODIFY_STATE, FALSE, completedName.GetUnicode());
+            if (readCompleted == NULL)
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+        }
+#endif // TARGET_WINDOWS
+
         FILE* fp;
 #ifdef TARGET_WINDOWS
         // Let a recorder atomically replace the final path while this stream
@@ -1043,12 +1076,32 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
         }
 
 #ifdef TARGET_WINDOWS
-        // Test-only delay used to verify that this native reader permits an atomic
-        // replacement while its stream remains open.
-        DWORD profileReadDelay = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_MultiCoreJitProfileReadDelay);
-        if (profileReadDelay != 0)
+        if (readReady != NULL)
         {
-            ClrSleepEx(profileReadDelay, FALSE);
+            DWORD error = ERROR_SUCCESS;
+            if (!SetEvent(readReady))
+            {
+                error = GetLastError();
+            }
+            else
+            {
+                DWORD result = WaitForSingleObject(readContinue, 30000);
+                if (result != WAIT_OBJECT_0)
+                {
+                    error = result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+                }
+                else if (!SetEvent(readCompleted))
+                {
+                    error = GetLastError();
+                }
+            }
+            if (error != ERROR_SUCCESS)
+            {
+                fclose(fp);
+                return HRESULT_FROM_WIN32(error);
+            }
+            // The completed signal proves the acknowledgement arrived while the
+            // native stream was still open, rather than after the timeout closed it.
         }
 #endif // TARGET_WINDOWS
 

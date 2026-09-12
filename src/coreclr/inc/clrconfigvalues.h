@@ -333,7 +333,8 @@ RETAIL_CONFIG_DWORD_INFO(UNSUPPORTED_TrackDynamicMethodDebugInfo, W("TrackDynami
 
 RETAIL_CONFIG_STRING_INFO(INTERNAL_MultiCoreJitProfile, W("MultiCoreJitProfile"), "If set, use the file to store/control multi-core JIT.")
 RETAIL_CONFIG_DWORD_INFO(INTERNAL_MultiCoreJitProfileWriteDelay, W("MultiCoreJitProfileWriteDelay"), 12, "Set the delay after which the multi-core JIT profile will be written to disk.")
-RETAIL_CONFIG_DWORD_INFO(INTERNAL_MultiCoreJitProfileReadDelay, W("MultiCoreJitProfileReadDelay"), 0, "Delay in milliseconds after opening a multi-core JIT profile, for testing.")
+// The test sets this after startup; an exact environment name bypasses the startup name cache.
+RETAIL_CONFIG_STRING_INFO_EX(INTERNAL_MultiCoreJitProfileReadEvents, W("DOTNET_MultiCoreJitProfileReadEvents"), "Named event prefix for a bounded multi-core JIT profile reader handshake, for testing.", CLRConfig::LookupOptions::DontPrependPrefix)
 RETAIL_CONFIG_DWORD_INFO(INTERNAL_MultiCoreJitMinNumCpus, W("MultiCoreJitMinNumCpus"), 2, "Minimum number of cpus that must be present to allow MultiCoreJit usage.")
 RETAIL_CONFIG_DWORD_INFO(INTERNAL_MultiCoreJitNoProfileGather, W("MultiCoreJitNoProfileGather"), 0, "Set to 1 to disable profile gathering (but leave possibly enabled profile usage).")
 

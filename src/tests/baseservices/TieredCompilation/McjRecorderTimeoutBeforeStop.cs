@@ -45,9 +45,15 @@ public static class BasicTest
         // Start a second recording with a different method so the new profile differs.
         if (supportsPosixRename)
         {
-            // MultiCoreJitProfileReadDelay keeps the native player stream open inside
-            // StartProfile. Replacing the directory entry from another thread succeeds
-            // only with POSIX rename semantics and FILE_SHARE_DELETE on the native stream.
+            // The native player signals after opening its stream, then waits for
+            // the replacement before closing it. No scheduling delay is assumed.
+            const int TimeoutMs = 30000;
+            const string EventsVariable = "DOTNET_MultiCoreJitProfileReadEvents";
+            string eventPrefix = @"Local\MCJ." + Guid.NewGuid().ToString("N");
+            using EventWaitHandle ready = new(false, EventResetMode.AutoReset, eventPrefix + ".ready");
+            using EventWaitHandle resume = new(false, EventResetMode.AutoReset, eventPrefix + ".continue");
+            using EventWaitHandle completed = new(false, EventResetMode.AutoReset, eventPrefix + ".completed");
+            string previousEvents = Environment.GetEnvironmentVariable(EventsVariable);
             string replacementPath = profilePath + ".replacement";
             File.Delete(replacementPath);
             File.Copy(profilePath, replacementPath);
@@ -55,24 +61,35 @@ public static class BasicTest
             Exception replacementError = null;
             Thread replacer = new(() =>
             {
-                Thread.Sleep(250);
                 try
                 {
+                    Assert.True(ready.WaitOne(TimeoutMs), "Native profile reader did not signal that its stream was open");
                     Assert.True(TryReplaceProfileWithPosixSemantics(replacementPath, profilePath));
                 }
                 catch (Exception ex)
                 {
                     replacementError = ex;
                 }
-            });
+                finally
+                {
+                    resume.Set();
+                }
+            }) { IsBackground = true };
 
             replacer.Start();
-            ProfileOptimization.StartProfile("profile.mcj");
-            bool replacementFinishedWhileReaderWasOpen = replacer.Join(0);
-            replacer.Join();
-
-            Assert.True(replacementFinishedWhileReaderWasOpen, "Profile replacement did not run while the native reader was open");
+            try
+            {
+                Environment.SetEnvironmentVariable(EventsVariable, eventPrefix);
+                ProfileOptimization.StartProfile("profile.mcj");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(EventsVariable, previousEvents);
+                resume.Set();
+                Assert.True(replacer.Join(TimeoutMs * 2), "Profile replacement thread did not finish");
+            }
             Assert.Null(replacementError);
+            Assert.True(completed.WaitOne(0), "Native reader did not acknowledge the replacement before closing its stream");
         }
         else
         {
