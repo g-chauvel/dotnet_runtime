@@ -260,7 +260,20 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         if (fopen_lp(&fp, tempFileName.GetUnicode(), W("wbx")) == 0)
 #endif
         {
-            hr = WriteOutput(fp);
+#ifndef TARGET_UNIX
+            // A rename publishes the temporary file metadata too. Preserve an
+            // existing profile's DACL before writing any profile contents, so a
+            // profile deliberately restricted below a more-permissive root does
+            // not become visible to the root's inherited principals.
+            if (!CopyFileDaclWrapper(m_fullFileName.GetUnicode(), tempFileName.GetUnicode()))
+            {
+                hr = E_FAIL;
+            }
+            else
+#endif
+            {
+                hr = WriteOutput(fp);
+            }
             // The stream is buffered: a failed flush at close means the temp file is
             // incomplete, do not publish it.
             if (fclose(fp) != 0 && SUCCEEDED(hr))

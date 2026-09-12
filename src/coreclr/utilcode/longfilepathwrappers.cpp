@@ -593,6 +593,78 @@ ReplaceFileWithPosixSemanticsWrapper(
 }
 
 BOOL
+CopyFileDaclWrapper(
+        _In_ LPCWSTR lpExistingFileName,
+        _In_ LPCWSTR lpNewFileName
+        )
+{
+    CONTRACTL
+    {
+        NOTHROW;
+    }
+    CONTRACTL_END;
+
+    HRESULT hr = S_OK;
+    BOOL ret = FALSE;
+    DWORD lastError = ERROR_SUCCESS;
+
+    EX_TRY
+    {
+        LongPathString existingPath(LongPathString::Literal, lpExistingFileName);
+        LongPathString newPath(LongPathString::Literal, lpNewFileName);
+
+        if (!SUCCEEDED(LongFile::NormalizePath(existingPath)) || !SUCCEEDED(LongFile::NormalizePath(newPath)))
+        {
+            lastError = ERROR_INVALID_NAME;
+        }
+        else
+        {
+            DWORD securityDescriptorSize = 0;
+            if (GetFileSecurityW(existingPath.GetUnicode(), DACL_SECURITY_INFORMATION, nullptr, 0, &securityDescriptorSize))
+            {
+                lastError = ERROR_INVALID_DATA;
+            }
+            else
+            {
+                lastError = GetLastError();
+                if (lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND)
+                {
+                    // The first publication has no destination DACL to preserve.
+                    ret = TRUE;
+                }
+                else if (lastError == ERROR_INSUFFICIENT_BUFFER && securityDescriptorSize != 0)
+                {
+                    NewArrayHolder<BYTE> securityDescriptor = new BYTE[securityDescriptorSize];
+                    if (GetFileSecurityW(existingPath.GetUnicode(), DACL_SECURITY_INFORMATION,
+                        reinterpret_cast<PSECURITY_DESCRIPTOR>(securityDescriptor.GetValue()), securityDescriptorSize, &securityDescriptorSize))
+                    {
+                        ret = SetFileSecurityW(newPath.GetUnicode(), DACL_SECURITY_INFORMATION,
+                            reinterpret_cast<PSECURITY_DESCRIPTOR>(securityDescriptor.GetValue()));
+                        lastError = GetLastError();
+                    }
+                    else
+                    {
+                        lastError = GetLastError();
+                    }
+                }
+            }
+        }
+    }
+    EX_CATCH_HRESULT(hr);
+
+    if (hr != S_OK)
+    {
+        SetLastError(hr);
+    }
+    else if (!ret)
+    {
+        SetLastError(lastError);
+    }
+
+    return ret;
+}
+
+BOOL
 DeleteFileWrapper(
         _In_ LPCWSTR lpFileName
         )
