@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- umask is process-wide, and only CoreCLR's Unix recorder implements this policy. -->
+    <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <NativeAotIncompatible>true</NativeAotIncompatible>
+    <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' != 'coreclr' or '$(TargetOS)' == 'windows'">true</CLRTestTargetUnsupported>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="McjProfilePermissions.cs" />
+    <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitMinNumCpus" Value="1" />
+  </ItemGroup>
+</Project>

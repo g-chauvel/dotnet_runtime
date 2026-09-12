@@ -29,6 +29,9 @@
 #include "multicorejit.h"
 #include "multicorejitimpl.h"
 #include <dn-stdio.h>
+#ifdef TARGET_UNIX
+#include <fcntl.h>
+#endif
 
 void MulticoreJitFireEtw(const WCHAR * pAction, const WCHAR * pTarget, int p1, int p2, int p3)
 {
@@ -131,6 +134,58 @@ void _MulticoreJitTrace(const char * format, ...)
 
 #endif
 
+#ifdef TARGET_UNIX
+// The profile is a private cache. Do not widen access when replacing an existing
+// inode, including by enabling entries in an inherited POSIX ACL's group mask.
+static FILE* OpenPrivateMulticoreJitProfile(const char* tempPath, const char* profilePath)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    struct stat profileStat;
+    bool preserveOwner = false;
+    if (lstat(profilePath, &profileStat) == 0)
+    {
+        // Replace symlinks themselves, rather than copying the target's ownership.
+        preserveOwner = S_ISREG(profileStat.st_mode);
+    }
+    else if (errno != ENOENT)
+    {
+        return nullptr;
+    }
+
+    int fd = open(tempPath, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    if (fd == -1)
+    {
+        return nullptr;
+    }
+
+    struct stat tempStat;
+    bool ready = fstat(fd, &tempStat) == 0;
+    if (ready && preserveOwner)
+    {
+        // Respect the creation umask and any tighter owner permissions on the old
+        // file. Group/other access is intentionally removed for this private cache.
+        mode_t mode = tempStat.st_mode & profileStat.st_mode & 0600;
+        ready = fchmod(fd, mode) == 0;
+    }
+
+    if (ready && preserveOwner &&
+        (tempStat.st_uid != profileStat.st_uid || tempStat.st_gid != profileStat.st_gid))
+    {
+        // If the writer cannot retain ownership, leave the old profile untouched.
+        ready = fchown(fd, profileStat.st_uid, profileStat.st_gid) == 0;
+    }
+
+    FILE* fp = ready ? fdopen(fd, "wb") : nullptr;
+    if (fp == nullptr)
+    {
+        close(fd);
+        remove(tempPath);
+    }
+    return fp;
+}
+#endif // TARGET_UNIX
+
 HRESULT MulticoreJitRecorder::WriteOutput()
 {
     CONTRACTL
@@ -165,7 +220,7 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         // tear it and a starting process replays a half-written profile
         // (https://github.com/dotnet/runtime/issues/121977). Write to a private
         // temp file and rename it over the final path instead. The temp is created
-        // exclusively ("wbx"). A random suffix avoids deterministic collisions when
+        // exclusively. A random suffix avoids deterministic collisions when
         // pids are reused, when a crashed process leaves a temp file behind, or when
         // containers with separate pid namespaces share the same profile root.
         // No fsync: the profile is a regenerable cache.
@@ -197,8 +252,13 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
 #endif // TARGET_UNIX
 
+#ifdef TARGET_UNIX
+        FILE* fp = OpenPrivateMulticoreJitProfile(tempFileNameUtf8.GetUTF8(), fullFileNameUtf8.GetUTF8());
+        if (fp != nullptr)
+#else
         FILE* fp;
         if (fopen_lp(&fp, tempFileName.GetUnicode(), W("wbx")) == 0)
+#endif
         {
             hr = WriteOutput(fp);
             // The stream is buffered: a failed flush at close means the temp file is
