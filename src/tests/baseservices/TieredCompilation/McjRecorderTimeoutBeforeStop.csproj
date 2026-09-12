@@ -12,6 +12,8 @@
   <ItemGroup>
     <Compile Include="McjRecorderTimeoutBeforeStop.cs" />
 
+    <!-- Exercise publication even on single-CPU test workers. -->
+    <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitMinNumCpus" Value="1" />
     <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileWriteDelay" Value="1" />
     <!-- CLRConfig DWORD values default to hexadecimal: 0x7d0 is 2000 ms. -->
     <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileReadDelay"

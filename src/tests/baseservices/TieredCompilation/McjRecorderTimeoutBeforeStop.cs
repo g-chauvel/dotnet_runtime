@@ -19,12 +19,6 @@ public static class BasicTest
     [Fact]
     public static void TestEntryPoint()
     {
-        // MulticoreJIT silently disables itself below DOTNET_MultiCoreJitMinNumCpus
-        // (default 2): no profile is written and there is nothing to assert.
-        if (Environment.ProcessorCount < 2)
-        {
-            return;
-        }
 
         // A profile left over by a previous run would make the assertions below meaningless.
         string profilePath = Path.Combine(Environment.CurrentDirectory, "profile.mcj");
