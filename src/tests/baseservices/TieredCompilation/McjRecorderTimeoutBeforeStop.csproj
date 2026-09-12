@@ -13,8 +13,9 @@
     <Compile Include="McjRecorderTimeoutBeforeStop.cs" />
 
     <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileWriteDelay" Value="1" />
+    <!-- CLRConfig DWORD values default to hexadecimal: 0x7d0 is 2000 ms. -->
     <CLRTestEnvironmentVariable Include="DOTNET_MultiCoreJitProfileReadDelay"
-                                Value="2000"
+                                Value="7d0"
                                 Condition="'$(TestWrapperTargetsWindows)' == 'true'" />
   </ItemGroup>
   <ItemGroup>
