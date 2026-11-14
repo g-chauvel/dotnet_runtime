@@ -45,7 +45,9 @@ const int      MAX_WALKBACK      = 128;
 
 enum
 {
-    MULTICOREJIT_PROFILE_VERSION   = 102,
+    // 103: the profile is published atomically. A version 102 profile may have been torn
+    // by concurrent in-place writers, so the player discards it once rather than replay it.
+    MULTICOREJIT_PROFILE_VERSION   = 103,
 
     MULTICOREJIT_HEADER_RECORD_ID           = 1,
     MULTICOREJIT_MODULE_RECORD_ID           = 2,
