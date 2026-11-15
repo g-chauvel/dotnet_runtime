@@ -1078,6 +1078,12 @@ HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
                     {
                         hr = COR_E_BADIMAGEFORMAT;
                     }
+                    else if (HashBytes(m_pFileBuffer, m_nFileSize) != header.checksum)
+                    {
+                        // The records do not match the header: the profile is damaged, and
+                        // replaying it could crash the process.
+                        hr = COR_E_BADIMAGEFORMAT;
+                    }
                 }
                 else
                 {

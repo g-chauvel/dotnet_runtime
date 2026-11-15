@@ -11,8 +11,15 @@ using TestLibrary;
 
 public static class BasicTest
 {
+    // Offsets in HeaderRecord (src/coreclr/vm/multicorejitimpl.h).
+    private const int VersionOffset = 4;
+    private const int MethodCountOffset = 16;
+    // shortCounters[0]: the number of method records the player handled during the session
+    // that wrote the profile.
+    private const int ReplayedMethodCountOffset = 24;
+
     // MulticoreJIT silently disables itself below DOTNET_MultiCoreJitMinNumCpus (default 2):
-    // no profile is written and there is nothing to assert.
+    // no profile is read or written and there is nothing to assert.
     public static bool IsMulticoreJitEnabled => Environment.ProcessorCount >= 2;
 
     [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
@@ -79,6 +86,91 @@ public static class BasicTest
         }
     }
 
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled))]
+    public static void RecordedProfileIsReplayed()
+    {
+        const string ProfileName = "replayed.mcj";
+        string profilePath = Path.Combine(Environment.CurrentDirectory, ProfileName);
+        File.Delete(profilePath);
+
+        ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
+        ProfileOptimization.StartProfile(ProfileName);
+        RecordedForReplay();
+        ProfileOptimization.StartProfile(null);
+
+        byte[] recorded = File.ReadAllBytes(profilePath);
+        Assert.True(BitConverter.ToUInt32(recorded, MethodCountOffset) > 0, "No method was recorded in the MCJ profile");
+
+        WaitForReplay(ProfileName, recorded);
+    }
+
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled))]
+    public static void DamagedProfileIsNotReplayed()
+    {
+        const string ProfileName = "damaged.mcj";
+        string profilePath = Path.Combine(Environment.CurrentDirectory, ProfileName);
+        File.Delete(profilePath);
+
+        ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
+        ProfileOptimization.StartProfile(ProfileName);
+        RecordedForDamage();
+        ProfileOptimization.StartProfile(null);
+
+        byte[] recorded = File.ReadAllBytes(profilePath);
+        Assert.True(BitConverter.ToUInt32(recorded, MethodCountOffset) > 0, "No method was recorded in the MCJ profile");
+
+        // A damaged profile left unreplayed proves nothing unless the intact one is replayed
+        // within the same wait.
+        int waitMs = WaitForReplay(ProfileName, recorded);
+
+        byte[] damagedRecords = (byte[])recorded.Clone();
+        damagedRecords[^1] ^= 0xFF;
+        byte[] truncatedRecords = recorded[..^8];
+        byte[] previousVersion = (byte[])recorded.Clone();
+        BitConverter.TryWriteBytes(previousVersion.AsSpan(VersionOffset), 102u);
+
+        foreach (byte[] damaged in new[] { damagedRecords, truncatedRecords, previousVersion })
+        {
+            File.WriteAllBytes(profilePath, damaged);
+            ProfileOptimization.StartProfile(ProfileName);
+            Thread.Sleep(waitMs);
+            ProfileOptimization.StartProfile(null);
+
+            byte[] published = File.ReadAllBytes(profilePath);
+            Assert.NotEqual(damaged, published);
+            Assert.Equal(0, ReplayedMethodCount(published));
+        }
+    }
+
+    // Replays the recorded profile and returns the wait after which the player was seen
+    // handling its records. The player runs on a background thread and stops with the session,
+    // so each attempt waits twice as long.
+    private static int WaitForReplay(string profileName, byte[] recorded)
+    {
+        string profilePath = Path.Combine(Environment.CurrentDirectory, profileName);
+        for (int waitMs = 100; ; waitMs *= 2)
+        {
+            // Stopping a session replaces the profile: put the recorded one back.
+            File.WriteAllBytes(profilePath, recorded);
+            ProfileOptimization.StartProfile(profileName);
+            Thread.Sleep(waitMs);
+            ProfileOptimization.StartProfile(null);
+
+            if (ReplayedMethodCount(File.ReadAllBytes(profilePath)) > 0)
+            {
+                return waitMs;
+            }
+
+            Assert.True(waitMs < 6400, "The recorded MCJ profile was not replayed");
+        }
+    }
+
+    private static int ReplayedMethodCount(byte[] profile) => BitConverter.ToUInt16(profile, ReplayedMethodCountOffset);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Foo()
     {
@@ -91,6 +183,16 @@ public static class BasicTest
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void RecordedBySecondSession()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedForReplay()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedForDamage()
     {
     }
 }
