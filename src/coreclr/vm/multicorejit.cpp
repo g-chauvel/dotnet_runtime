@@ -171,6 +171,47 @@ static void CopyProfileOwnerAndMode(const char * profilePath, FILE * fp)
 }
 #endif // TARGET_UNIX
 
+// Store in the header a checksum of the records that follow it, so that the player rejects
+// a profile whose records do not match its header. The temp file is private to this writer:
+// read it back to hash exactly the bytes that will be published.
+static HRESULT WriteChecksum(FILE * fp)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_PREEMPTIVE;
+    }
+    CONTRACTL_END;
+
+    int64_t fileSize = ftell_64(fp);
+    if ((fileSize < (int64_t)sizeof(HeaderRecord)) || ((fileSize - (int64_t)sizeof(HeaderRecord)) > UINT32_MAX))
+    {
+        return E_FAIL;
+    }
+
+    size_t bodySize = (size_t)(fileSize - (int64_t)sizeof(HeaderRecord));
+    NewArrayHolder<BYTE> body(new (nothrow) BYTE[bodySize]);
+    if (body == NULL)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    if ((fsetpos_64(fp, sizeof(HeaderRecord)) != 0) || (fread(body, 1, bodySize, fp) != bodySize))
+    {
+        return E_FAIL;
+    }
+
+    unsigned checksum = HashBytes(body, bodySize);
+
+    if ((fsetpos_64(fp, offsetof(HeaderRecord, checksum)) != 0) || (fwrite(&checksum, sizeof(checksum), 1, fp) != 1))
+    {
+        return E_FAIL;
+    }
+
+    return S_OK;
+}
+
 HRESULT MulticoreJitRecorder::WriteOutput()
 {
     CONTRACTL
@@ -203,13 +244,14 @@ HRESULT MulticoreJitRecorder::WriteOutput()
         fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
 #endif // TARGET_UNIX
 
-        // x: fail rather than write to the temp file of another writer.
+        // +: WriteChecksum reads the records back. x: fail rather than write to the temp file of
+        // another writer.
 #ifdef TARGET_UNIX
-        const WCHAR * tempFileMode = W("wbx");
+        const WCHAR * tempFileMode = W("w+bx");
 #else
         // N: a process started meanwhile must not inherit the handle, which would keep the temp
         // file from being renamed or deleted.
-        const WCHAR * tempFileMode = W("wbxN");
+        const WCHAR * tempFileMode = W("w+bxN");
 #endif // TARGET_UNIX
 
         FILE* fp;
@@ -219,6 +261,10 @@ HRESULT MulticoreJitRecorder::WriteOutput()
             CopyProfileOwnerAndMode(fullFileNameUtf8.GetUTF8(), fp);
 #endif // TARGET_UNIX
             hr = WriteOutput(fp);
+            if (SUCCEEDED(hr))
+            {
+                hr = WriteChecksum(fp);
+            }
             if (fclose(fp) != 0 && SUCCEEDED(hr))
             {
                 hr = E_FAIL;

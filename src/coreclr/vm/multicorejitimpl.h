@@ -45,8 +45,9 @@ const int      MAX_WALKBACK      = 128;
 
 enum
 {
-    // 103: the profile is published atomically. A version 102 profile may have been torn
-    // by concurrent in-place writers, so the player discards it once rather than replay it.
+    // 103: the profile is published atomically and its header carries a checksum of the
+    // records. A version 102 profile may have been torn by concurrent in-place writers, so
+    // the player discards it rather than replay it.
     MULTICOREJIT_PROFILE_VERSION   = 103,
 
     MULTICOREJIT_HEADER_RECORD_ID           = 1,
@@ -74,8 +75,10 @@ inline unsigned Pack8_24(unsigned up, unsigned low)
 //  5. Maximum number of methods supported is MAX_METHODS
 //  6. Simple module name stored
 //  7. Method flag JIT_BY_APP_THREAD is for diagnosis only
+//  8. checksum is HashBytes over everything after the header. The player rejects a profile whose records do not match it.
+//     HashBytes is part of the format: changing it requires a new MULTICOREJIT_PROFILE_VERSION
 //
-// <HeaderRecord>::=     <recordType=MULTICOREJIT_HEADER_RECORD_ID> <3byte_recordSize> <version> <timeStamp> <moduleCount> <methodCount> <DependencyCount> <unsigned short counter>*14 <unsigned counter>*3
+// <HeaderRecord>::=     <recordType=MULTICOREJIT_HEADER_RECORD_ID> <3byte_recordSize> <version> <checksum> <moduleCount> <methodCount> <DependencyCount> <unsigned short counter>*14 <unsigned counter>*3
 // <ModuleRecord>::=     <recordType=MULTICOREJIT_MODULE_RECORD_ID> <3byte_recordSize> <ModuleVersion> <JitMethodCount> <loadLevel> <lenModuleName> char*lenModuleName <padding>
 // <ModuleDependency>::= <recordType=MULTICOREJIT_MODULEDEPENDENCY_RECORD_ID> <loadLevel_1byte> <moduleIndex_2bytes>
 // <GenericMethod>::=    <recordType=MULTICOREJIT_GENERICMETHOD_RECORD_ID> <methodFlags_1byte> <moduleIndex_2byte> <sigSize_2byte> <signature> <optional padding>
@@ -133,7 +136,7 @@ struct HeaderRecord
 {
     unsigned        recordID;
     unsigned        version;
-    unsigned        timeStamp;
+    unsigned        checksum;
     unsigned        moduleCount;
     unsigned        methodCount;
     unsigned        moduleDepCount;
