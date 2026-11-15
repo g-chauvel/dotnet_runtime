@@ -155,16 +155,53 @@ HRESULT MulticoreJitRecorder::WriteOutput()
 
     EX_TRY
     {
-        FILE* fp;
+        StackSString tempFileName(m_fullFileName);
+        tempFileName.AppendPrintf(".%u.%llx.tmp", (unsigned)GetCurrentProcessId(), (unsigned long long)minipal_hires_ticks());
+#ifdef TARGET_UNIX
+        StackSString tempFileNameUtf8;
+        tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
+        StackSString fullFileNameUtf8;
+        fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+#endif // TARGET_UNIX
 
-        if (fopen_lp(&fp, m_fullFileName.GetUnicode(), W("wb")) == 0)
+        FILE* fp;
+        if (fopen_lp(&fp, tempFileName.GetUnicode(), W("wbx")) == 0)
         {
             hr = WriteOutput(fp);
-            fclose(fp);
+            if (fclose(fp) != 0 && SUCCEEDED(hr))
+            {
+                hr = E_FAIL;
+            }
+
+            if (SUCCEEDED(hr))
+            {
+#ifndef TARGET_UNIX
+                if (!MoveFileExWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+                {
+                    hr = E_FAIL;
+                }
+#else
+                if (rename(tempFileNameUtf8.GetUTF8(), fullFileNameUtf8.GetUTF8()) != 0)
+                {
+                    hr = E_FAIL;
+                }
+#endif // !TARGET_UNIX
+            }
+
+            if (FAILED(hr))
+            {
+#ifndef TARGET_UNIX
+                DeleteFileWrapper(tempFileName.GetUnicode());
+#else
+                remove(tempFileNameUtf8.GetUTF8());
+#endif // !TARGET_UNIX
+            }
         }
     }
     EX_CATCH
-    { }
+    {
+        hr = E_FAIL;
+    }
     EX_END_CATCH
 
     return hr;
