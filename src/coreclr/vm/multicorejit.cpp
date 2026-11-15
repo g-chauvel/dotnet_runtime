@@ -30,6 +30,11 @@
 #include "multicorejitimpl.h"
 #include <dn-stdio.h>
 
+#ifdef TARGET_UNIX
+#include <sys/stat.h>
+#include <unistd.h>
+#endif // TARGET_UNIX
+
 void MulticoreJitFireEtw(const WCHAR * pAction, const WCHAR * pTarget, int p1, int p2, int p3)
 {
     LIMITED_METHOD_CONTRACT
@@ -131,6 +136,40 @@ void _MulticoreJitTrace(const char * format, ...)
 
 #endif
 
+#ifdef TARGET_UNIX
+// An in-place write kept the owner, the group and the mode of the profile, where rename() publishes
+// the temp file with those it was created with: a process run with sudo that keeps HOME would hand
+// the profile of the user to root. Give the temp file those of the profile it replaces.
+static void CopyProfileOwnerAndMode(const char * profilePath, FILE * fp)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    struct stat profileStat;
+    if ((lstat(profilePath, &profileStat) != 0) || !S_ISREG(profileStat.st_mode))
+    {
+        return;
+    }
+
+    int fd = fileno(fp);
+
+    // Before fchown: a process allowed to give the file away may not be allowed to change the
+    // mode of a file it no longer owns.
+    if (fchmod(fd, profileStat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0)
+    {
+        // The profile is published with the mode the temp file was created with.
+    }
+
+    if (fchown(fd, profileStat.st_uid, profileStat.st_gid) != 0)
+    {
+        // Only a privileged process can give a file to another user. A member of the group of
+        // the profile can still keep that group, so that the other members can write it.
+        if (fchown(fd, (uid_t)-1, profileStat.st_gid) != 0)
+        {
+            // The profile keeps the owner and the group the temp file was created with.
+        }
+    }
+}
+#endif // TARGET_UNIX
 
 HRESULT MulticoreJitRecorder::WriteOutput()
 {
@@ -155,16 +194,65 @@ HRESULT MulticoreJitRecorder::WriteOutput()
 
     EX_TRY
     {
-        FILE* fp;
+        StackSString tempFileName(m_fullFileName);
+        tempFileName.AppendPrintf(".%u.%llx.tmp", (unsigned)GetCurrentProcessId(), (unsigned long long)minipal_hires_ticks());
+#ifdef TARGET_UNIX
+        StackSString tempFileNameUtf8;
+        tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
+        StackSString fullFileNameUtf8;
+        fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+#endif // TARGET_UNIX
 
-        if (fopen_lp(&fp, m_fullFileName.GetUnicode(), W("wb")) == 0)
+        // x: fail rather than write to the temp file of another writer.
+#ifdef TARGET_UNIX
+        const WCHAR * tempFileMode = W("wbx");
+#else
+        // N: a process started meanwhile must not inherit the handle, which would keep the temp
+        // file from being renamed or deleted.
+        const WCHAR * tempFileMode = W("wbxN");
+#endif // TARGET_UNIX
+
+        FILE* fp;
+        if (fopen_lp(&fp, tempFileName.GetUnicode(), tempFileMode) == 0)
         {
+#ifdef TARGET_UNIX
+            CopyProfileOwnerAndMode(fullFileNameUtf8.GetUTF8(), fp);
+#endif // TARGET_UNIX
             hr = WriteOutput(fp);
-            fclose(fp);
+            if (fclose(fp) != 0 && SUCCEEDED(hr))
+            {
+                hr = E_FAIL;
+            }
+
+            if (SUCCEEDED(hr))
+            {
+#ifndef TARGET_UNIX
+                if (!MoveFileExWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+                {
+                    hr = E_FAIL;
+                }
+#else
+                if (rename(tempFileNameUtf8.GetUTF8(), fullFileNameUtf8.GetUTF8()) != 0)
+                {
+                    hr = E_FAIL;
+                }
+#endif // !TARGET_UNIX
+            }
+
+            if (FAILED(hr))
+            {
+#ifndef TARGET_UNIX
+                DeleteFileWrapper(tempFileName.GetUnicode());
+#else
+                remove(tempFileNameUtf8.GetUTF8());
+#endif // !TARGET_UNIX
+            }
         }
     }
     EX_CATCH
-    { }
+    {
+        hr = E_FAIL;
+    }
     EX_END_CATCH
 
     return hr;

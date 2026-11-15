@@ -4,6 +4,8 @@
     <RequiresProcessIsolation>true</RequiresProcessIsolation>
     <!-- No crossgen folder under Core_Root -->
      <NativeAotIncompatible>true</NativeAotIncompatible>
+    <!-- The test asserts that the MCJ profile file is published, which only CoreCLR's MulticoreJIT does. -->
+    <CLRTestTargetUnsupported Condition="'$(RuntimeFlavor)' != 'coreclr'">true</CLRTestTargetUnsupported>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Optimize>true</Optimize>
   </PropertyGroup>

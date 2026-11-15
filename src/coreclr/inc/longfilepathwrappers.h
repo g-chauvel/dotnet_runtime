@@ -27,6 +27,18 @@ CreateFileWrapper(
 
 int u16_fopen_wrapper(FILE** stream, const WCHAR* filename, const WCHAR* mode);
 
+BOOL
+MoveFileExWrapper(
+    _In_ LPCWSTR lpExistingFileName,
+    _In_ LPCWSTR lpNewFileName,
+    _In_ DWORD dwFlags
+    );
+
+BOOL
+DeleteFileWrapper(
+    _In_ LPCWSTR lpFileName
+    );
+
 DWORD
 SearchPathWrapper(
     _In_opt_ LPCWSTR lpPath,
