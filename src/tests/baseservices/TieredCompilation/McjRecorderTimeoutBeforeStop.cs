@@ -22,6 +22,9 @@ public static class BasicTest
     // no profile is read or written and there is nothing to assert.
     public static bool IsMulticoreJitEnabled => Environment.ProcessorCount >= 2;
 
+    // A privileged process can write a read-only file on Unix.
+    public static bool IsReadOnlyFileProtected => OperatingSystem.IsWindows() || !Environment.IsPrivilegedProcess;
+
     [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
     [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
     [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled))]
@@ -146,6 +149,40 @@ public static class BasicTest
         }
     }
 
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled), nameof(IsReadOnlyFileProtected))]
+    public static void ReadOnlyProfileIsNotReplaced()
+    {
+        const string ProfileName = "readonly.mcj";
+        string profilePath = Path.Combine(Environment.CurrentDirectory, ProfileName);
+        if (File.Exists(profilePath))
+        {
+            File.SetAttributes(profilePath, FileAttributes.Normal);
+            File.Delete(profilePath);
+        }
+
+        ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
+        ProfileOptimization.StartProfile(ProfileName);
+        RecordedInReadOnlyProfile();
+        ProfileOptimization.StartProfile(null);
+
+        byte[] recorded = File.ReadAllBytes(profilePath);
+        File.SetAttributes(profilePath, FileAttributes.ReadOnly);
+        try
+        {
+            ProfileOptimization.StartProfile(ProfileName);
+            ProfileOptimization.StartProfile(null);
+
+            Assert.Equal(recorded, File.ReadAllBytes(profilePath));
+            Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, ProfileName + ".*.tmp"));
+        }
+        finally
+        {
+            File.SetAttributes(profilePath, FileAttributes.Normal);
+        }
+    }
+
     // Replays the recorded profile and returns the wait after which the player was seen
     // handling its records. The player runs on a background thread and stops with the session,
     // so each attempt waits twice as long.
@@ -193,6 +230,11 @@ public static class BasicTest
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void RecordedForDamage()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedInReadOnlyProfile()
     {
     }
 }
