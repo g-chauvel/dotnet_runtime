@@ -31,6 +31,7 @@
 #include <dn-stdio.h>
 
 #ifdef TARGET_UNIX
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif // TARGET_UNIX
@@ -237,11 +238,20 @@ HRESULT MulticoreJitRecorder::WriteOutput()
     {
         StackSString tempFileName(m_fullFileName);
         tempFileName.AppendPrintf(".%u.%llx.tmp", (unsigned)GetCurrentProcessId(), (unsigned long long)minipal_hires_ticks());
+        bool canReplaceProfile = true;
 #ifdef TARGET_UNIX
         StackSString tempFileNameUtf8;
         tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
         StackSString fullFileNameUtf8;
         fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+
+        // rename() only needs write access to the directory, so it would replace a profile
+        // that this process is not allowed to write, such as one made read-only to freeze it.
+        // Leave such a profile alone, as MoveFileExW does on Windows.
+        if ((access(fullFileNameUtf8.GetUTF8(), W_OK) != 0) && (errno != ENOENT))
+        {
+            canReplaceProfile = false;
+        }
 #endif // TARGET_UNIX
 
         // +: WriteChecksum reads the records back. x: fail rather than write to the temp file of
@@ -255,7 +265,7 @@ HRESULT MulticoreJitRecorder::WriteOutput()
 #endif // TARGET_UNIX
 
         FILE* fp;
-        if (fopen_lp(&fp, tempFileName.GetUnicode(), tempFileMode) == 0)
+        if (canReplaceProfile && (fopen_lp(&fp, tempFileName.GetUnicode(), tempFileMode) == 0))
         {
 #ifdef TARGET_UNIX
             CopyProfileOwnerAndMode(fullFileNameUtf8.GetUTF8(), fp);
