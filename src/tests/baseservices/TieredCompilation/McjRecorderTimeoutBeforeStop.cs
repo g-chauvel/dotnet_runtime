@@ -5,6 +5,7 @@ using System;
 using System.IO;
 using System.Runtime;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Xunit;
 using TestLibrary;
@@ -24,6 +25,9 @@ public static class BasicTest
 
     // A privileged process can write a read-only file on Unix.
     public static bool IsReadOnlyFileProtected => OperatingSystem.IsWindows() || !Environment.IsPrivilegedProcess;
+
+    // Giving a symbolic link to another user takes privileges.
+    public static bool IsPrivilegedProcess => Environment.IsPrivilegedProcess;
 
     [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
     [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
@@ -183,6 +187,99 @@ public static class BasicTest
         }
     }
 
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [PlatformSpecific(TestPlatforms.AnyUnix)] // Publishing through a symbolic link is only implemented on Unix.
+    [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled))]
+    public static void SymbolicLinkToProfileIsKept()
+    {
+        const string ProfileName = "linked.mcj";
+        string profilePath = Path.Combine(Environment.CurrentDirectory, ProfileName);
+        string targetDirectory = Path.Combine(Environment.CurrentDirectory, "linktarget");
+        string targetPath = Path.Combine(targetDirectory, "target.mcj");
+        string linkTarget = Path.Combine("linktarget", "target.mcj");
+
+        File.Delete(profilePath);
+        Directory.CreateDirectory(targetDirectory);
+        File.Delete(targetPath);
+        File.CreateSymbolicLink(profilePath, linkTarget);
+
+        // The first session creates the target of the link, the second one replaces it.
+        ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
+        for (int session = 0; session < 2; session++)
+        {
+            ProfileOptimization.StartProfile(ProfileName);
+            RecordedThroughSymbolicLink();
+            ProfileOptimization.StartProfile(null);
+
+            Assert.Equal(linkTarget, new FileInfo(profilePath).LinkTarget);
+
+            byte[] published = File.ReadAllBytes(targetPath);
+            Assert.True(published.Length > MethodCountOffset + sizeof(uint), "The MCJ profile was not published to the target of the symbolic link");
+            if (session == 0)
+            {
+                Assert.True(BitConverter.ToUInt32(published, MethodCountOffset) > 0, "No method was recorded in the MCJ profile");
+            }
+
+            Assert.Empty(Directory.GetFiles(targetDirectory, "*.tmp"));
+            Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, ProfileName + ".*.tmp"));
+
+            File.WriteAllBytes(targetPath, Array.Empty<byte>());
+        }
+    }
+
+    [ActiveIssue("No crossgen folder under Core_Root", typeof(Utilities), nameof(Utilities.IsNativeAot))]
+    [ActiveIssue("No crossgen folder under Core_Root", TestPlatforms.Android)]
+    [PlatformSpecific(TestPlatforms.AnyUnix)]
+    [ConditionalFact(typeof(BasicTest), nameof(IsMulticoreJitEnabled), nameof(IsPrivilegedProcess))]
+    public static void SymbolicLinkOfAnotherUserInStickyDirectoryIsNotFollowed()
+    {
+        const string ProfileName = "planted.mcj";
+        const uint OtherUserId = 65534;
+        string stickyDirectory = Path.Combine(Environment.CurrentDirectory, "sticky");
+        string profilePath = Path.Combine(stickyDirectory, ProfileName);
+        string victimPath = Path.Combine(Environment.CurrentDirectory, "victim.mcj");
+        byte[] victim = { 1, 2, 3, 4 };
+
+        Directory.CreateDirectory(stickyDirectory);
+        File.SetUnixFileMode(stickyDirectory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute |
+            UnixFileMode.StickyBit);
+        File.Delete(profilePath);
+        File.WriteAllBytes(victimPath, victim);
+        File.CreateSymbolicLink(profilePath, victimPath);
+
+        // Only the first profile root of a process is used: reach the sticky directory through
+        // the profile name.
+        ProfileOptimization.SetProfileRoot(Environment.CurrentDirectory);
+        string profileName = Path.Combine("sticky", ProfileName);
+
+        // A link that belongs to the process is followed, as the kernel does.
+        ProfileOptimization.StartProfile(profileName);
+        RecordedThroughOwnLink();
+        ProfileOptimization.StartProfile(null);
+
+        Assert.NotEqual(victim, File.ReadAllBytes(victimPath));
+        Assert.Equal(victimPath, new FileInfo(profilePath).LinkTarget);
+
+        // The same link given to another user, as one planted in a shared directory such as /tmp.
+        // The kernel does not follow it on open when fs.protected_symlinks is set: the runtime
+        // must not either.
+        File.WriteAllBytes(victimPath, victim);
+        Assert.True(lchown(profilePath, OtherUserId, OtherUserId) == 0, $"lchown failed: {Marshal.GetLastPInvokeError()}");
+
+        ProfileOptimization.StartProfile(profileName);
+        RecordedThroughPlantedLink();
+        ProfileOptimization.StartProfile(null);
+
+        Assert.Equal(victim, File.ReadAllBytes(victimPath));
+        Assert.Equal(victimPath, new FileInfo(profilePath).LinkTarget);
+        Assert.Empty(Directory.GetFiles(Environment.CurrentDirectory, "victim.mcj.*.tmp"));
+        Assert.Empty(Directory.GetFiles(stickyDirectory, "*.tmp"));
+    }
+
     // Replays the recorded profile and returns the wait after which the player was seen
     // handling its records. The player runs on a background thread and stops with the session,
     // so each attempt waits twice as long.
@@ -207,6 +304,9 @@ public static class BasicTest
     }
 
     private static int ReplayedMethodCount(byte[] profile) => BitConverter.ToUInt16(profile, ReplayedMethodCountOffset);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int lchown(string path, uint owner, uint group);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void Foo()
@@ -235,6 +335,21 @@ public static class BasicTest
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void RecordedInReadOnlyProfile()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedThroughSymbolicLink()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedThroughOwnLink()
+    {
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RecordedThroughPlantedLink()
     {
     }
 }

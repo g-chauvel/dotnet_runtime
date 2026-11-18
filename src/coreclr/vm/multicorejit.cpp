@@ -32,6 +32,8 @@
 
 #ifdef TARGET_UNIX
 #include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif // TARGET_UNIX
 
@@ -136,6 +138,80 @@ void _MulticoreJitTrace(const char * format, ...)
 
 #endif
 
+#ifdef TARGET_UNIX
+// Follow the symbolic links at the end of the profile path, so that the profile is published
+// to their target and the links are kept. readlink() is not restricted by fs.protected_symlinks,
+// so apply its rule to each link: in a sticky world-writable directory, follow a link only when
+// it belongs to this process or to the owner of the directory. Return false when a link must
+// not or cannot be followed.
+static bool ResolveProfileLinks(char (&path)[PATH_MAX])
+{
+    LIMITED_METHOD_CONTRACT;
+
+    // The nesting limit of the kernel (MAXSYMLINKS).
+    for (int depth = 0; depth < 40; depth++)
+    {
+        struct stat linkStat;
+        if ((lstat(path, &linkStat) != 0) || !S_ISLNK(linkStat.st_mode))
+        {
+            return true;
+        }
+
+        const char * lastSlash = strrchr(path, '/');
+        size_t prefixLength = (lastSlash == nullptr) ? 0 : (size_t)(lastSlash - path) + 1;
+
+        char directory[PATH_MAX];
+        if (prefixLength == 0)
+        {
+            directory[0] = '.';
+            directory[1] = '\0';
+        }
+        else
+        {
+            // Keep the slash of a link in the root directory.
+            size_t directoryLength = (prefixLength == 1) ? 1 : prefixLength - 1;
+            memcpy(directory, path, directoryLength);
+            directory[directoryLength] = '\0';
+        }
+
+        struct stat directoryStat;
+        if (stat(directory, &directoryStat) != 0)
+        {
+            return false;
+        }
+
+        if (((directoryStat.st_mode & (S_ISVTX | S_IWOTH)) == (S_ISVTX | S_IWOTH)) &&
+            (linkStat.st_uid != geteuid()) && (linkStat.st_uid != directoryStat.st_uid))
+        {
+            return false;
+        }
+
+        char target[PATH_MAX];
+        ssize_t targetLength = readlink(path, target, PATH_MAX);
+        if ((targetLength <= 0) || (targetLength >= PATH_MAX))
+        {
+            return false;
+        }
+        target[targetLength] = '\0';
+
+        // A relative target is relative to the directory of the link.
+        if (target[0] == '/')
+        {
+            prefixLength = 0;
+        }
+
+        if (prefixLength + (size_t)targetLength >= PATH_MAX)
+        {
+            return false;
+        }
+        memcpy(path + prefixLength, target, (size_t)targetLength + 1);
+    }
+
+    // Too many levels of symbolic links.
+    return false;
+}
+#endif // TARGET_UNIX
+
 // Store in the header a checksum of the records that follow it, so that the player rejects
 // a profile whose records do not match its header. The temp file is private to this writer:
 // read it back to hash exactly the bytes that will be published.
@@ -200,22 +276,45 @@ HRESULT MulticoreJitRecorder::WriteOutput()
 
     EX_TRY
     {
-        StackSString tempFileName(m_fullFileName);
-        tempFileName.AppendPrintf(".%u.%llx.tmp", (unsigned)GetCurrentProcessId(), (unsigned long long)minipal_hires_ticks());
+        StackSString publishFileName(m_fullFileName);
         bool canReplaceProfile = true;
 #ifdef TARGET_UNIX
-        StackSString tempFileNameUtf8;
-        tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
-        StackSString fullFileNameUtf8;
-        fullFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+        StackSString publishFileNameUtf8;
+        publishFileNameUtf8.SetAndConvertToUTF8(m_fullFileName.GetUnicode());
+
+        // rename() replaces the directory entry it is given: on a profile path that is a
+        // symbolic link it would replace the link and leave its target stale. Publish to
+        // the target instead, with the temp file next to it.
+        char resolvedFileName[PATH_MAX];
+        size_t fileNameLength = strlen(publishFileNameUtf8.GetUTF8());
+        if (fileNameLength < PATH_MAX)
+        {
+            memcpy(resolvedFileName, publishFileNameUtf8.GetUTF8(), fileNameLength + 1);
+            if (ResolveProfileLinks(resolvedFileName))
+            {
+                publishFileNameUtf8.SetUTF8(resolvedFileName);
+                publishFileName.SetUTF8(resolvedFileName);
+            }
+            else
+            {
+                canReplaceProfile = false;
+            }
+        }
 
         // rename() only needs write access to the directory, so it would replace a profile
         // that this process is not allowed to write, such as one made read-only to freeze it.
         // Leave such a profile alone, as MoveFileExW does on Windows.
-        if ((access(fullFileNameUtf8.GetUTF8(), W_OK) != 0) && (errno != ENOENT))
+        if (canReplaceProfile && (access(publishFileNameUtf8.GetUTF8(), W_OK) != 0) && (errno != ENOENT))
         {
             canReplaceProfile = false;
         }
+#endif // TARGET_UNIX
+
+        StackSString tempFileName(publishFileName);
+        tempFileName.AppendPrintf(".%u.%llx.tmp", (unsigned)GetCurrentProcessId(), (unsigned long long)minipal_hires_ticks());
+#ifdef TARGET_UNIX
+        StackSString tempFileNameUtf8;
+        tempFileNameUtf8.SetAndConvertToUTF8(tempFileName.GetUnicode());
 #endif // TARGET_UNIX
 
         FILE* fp;
@@ -235,12 +334,12 @@ HRESULT MulticoreJitRecorder::WriteOutput()
             if (SUCCEEDED(hr))
             {
 #ifndef TARGET_UNIX
-                if (!MoveFileExWrapper(tempFileName.GetUnicode(), m_fullFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+                if (!MoveFileExWrapper(tempFileName.GetUnicode(), publishFileName.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
                 {
                     hr = E_FAIL;
                 }
 #else
-                if (rename(tempFileNameUtf8.GetUTF8(), fullFileNameUtf8.GetUTF8()) != 0)
+                if (rename(tempFileNameUtf8.GetUTF8(), publishFileNameUtf8.GetUTF8()) != 0)
                 {
                     hr = E_FAIL;
                 }
